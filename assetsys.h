@@ -44,6 +44,7 @@ assetsys_t* assetsys_create( void* memctx );
 void assetsys_destroy( assetsys_t* sys );
 
 assetsys_error_t assetsys_mount( assetsys_t* sys, char const* path, char const* mount_as );
+assetsys_error_t assetsys_mount_mem( assetsys_t* sys, const char* name, const char *buf, size_t size, char const* mount_as );
 assetsys_error_t assetsys_dismount( assetsys_t* sys, char const* path, char const* mounted_as );
 
 typedef struct assetsys_file_t { ASSETSYS_U64 mount; ASSETSYS_U64 path; int index; } assetsys_file_t;
@@ -6028,6 +6029,157 @@ assetsys_error_t assetsys_mount( assetsys_t* sys, char const* path, char const* 
             }
         }
         
+
+    assetsys_internal_collate_directories( sys, mount );
+
+    ++sys->mounts_count;
+    return ASSETSYS_SUCCESS;
+    }
+
+assetsys_error_t assetsys_mount_mem( assetsys_t* sys, const char* name, const char *buf, size_t size, char const* mount_as )
+    {
+    if( !buf ) return ASSETSYS_ERROR_INVALID_PARAMETER;
+    if( !mount_as ) return ASSETSYS_ERROR_INVALID_PARAMETER;
+    if( strchr( mount_as, ':' ) ) return ASSETSYS_ERROR_INVALID_PATH;
+    if( strchr( mount_as, '\\' ) ) return ASSETSYS_ERROR_INVALID_PATH;
+    // if( len > 0 && path[ 0 ] == '/' ) return ASSETSYS_ERROR_INVALID_PATH;
+    // if( len > 1 && path[ len - 1 ] == '/' ) return ASSETSYS_ERROR_INVALID_PATH;
+    int mount_len = (int) strlen( mount_as );
+    if( mount_len == 0 || mount_as[ 0 ] != '/' || ( mount_len > 1 && mount_as[ mount_len - 1 ] == '/' ) )
+        return ASSETSYS_ERROR_INVALID_PATH;
+
+    enum assetsys_internal_mount_type_t type;
+
+    if( sys->mounts_count >= sys->mounts_capacity )
+        {
+        sys->mounts_capacity *= 2;
+        struct assetsys_internal_mount_t* new_mounts = (struct assetsys_internal_mount_t*) ASSETSYS_MALLOC( sys->memctx,
+            sizeof( *sys->mounts ) * sys->mounts_capacity );
+        memcpy( new_mounts, sys->mounts, sizeof( *sys->mounts ) * sys->mounts_count );
+        ASSETSYS_FREE( sys->memctx, sys->mounts );
+        sys->mounts = new_mounts;
+        struct assetsys_internal_mount_t* mount_ptr;
+        for( int i = 0; i < sys->mounts_count; ++i )
+            {
+            mount_ptr = sys->mounts + i;
+            if (mount_ptr->type == ASSETSYS_INTERNAL_MOUNT_TYPE_ZIP)
+                {
+                mount_ptr->zip.m_pIO_opaque = &mount_ptr->zip;
+                }
+            }
+        }
+
+    struct assetsys_internal_mount_t* mount = &sys->mounts[ sys->mounts_count ];
+
+    mount->mounted_as = assetsys_internal_add_string( sys, mount_as ? mount_as : "" );
+    mount->mount_len = mount_as ? (int) strlen( mount_as ) : 0;
+    mount->path = assetsys_internal_add_string( sys, name );
+    mount->type = ASSETSYS_INTERNAL_MOUNT_TYPE_ZIP;
+
+    mount->files_count = 0;
+    mount->files_capacity = 4096;
+    mount->files = (struct assetsys_internal_file_t*) ASSETSYS_MALLOC( sys->memctx,
+        sizeof( *(mount->files) ) * mount->files_capacity );
+
+    mount->dirs_count = 0;
+    mount->dirs_capacity = 1024;
+    mount->dirs = (struct assetsys_internal_folder_t*) ASSETSYS_MALLOC( sys->memctx,
+        sizeof( *(mount->dirs) ) * mount->dirs_capacity );
+
+    struct assetsys_internal_folder_t* dir = &mount->dirs[ mount->dirs_count++ ];
+    dir->collated_index = assetsys_internal_register_collated( sys, mount_as, 0 );
+
+    memset( &mount->zip, 0, sizeof( mount->zip ) );
+    mount->zip.m_pAlloc = assetsys_internal_mz_alloc;
+    mount->zip.m_pRealloc = assetsys_internal_mz_realloc;
+    mount->zip.m_pFree = assetsys_internal_mz_free;
+    mount->zip.m_pAlloc_opaque = sys->memctx;
+    mz_bool status = mz_zip_reader_init_mem(&mount->zip, buf, size, 0);
+
+    if( !status )
+    {
+        ASSETSYS_FREE( sys->memctx, mount->dirs );
+        ASSETSYS_FREE( sys->memctx, mount->files );
+        return ASSETSYS_ERROR_FAILED_TO_READ_ZIP;
+    }
+
+    int count = (int) mz_zip_reader_get_num_files( &mount->zip );
+
+    for( int i = 0; i < count; ++i )
+    {
+        if( mz_zip_reader_is_file_a_directory( &mount->zip, (mz_uint) i ) )
+        {
+            if( mount->dirs_count >= mount->dirs_capacity )
+            {
+                mount->dirs_capacity *= 2;
+                struct assetsys_internal_folder_t* new_dirs = (struct assetsys_internal_folder_t*) ASSETSYS_MALLOC(
+                            sys->memctx, sizeof( *(mount->dirs) ) * mount->dirs_capacity );
+                memcpy( new_dirs, mount->dirs, sizeof( *(mount->dirs) ) * mount->dirs_count );
+                ASSETSYS_FREE( sys->memctx, mount->dirs );
+                mount->dirs = new_dirs;
+            }
+
+            char filename[ 1024 ];
+            mz_zip_reader_get_filename( &mount->zip, (mz_uint) i, filename, sizeof( filename ) );
+
+            struct assetsys_internal_folder_t* as_dir = &mount->dirs[ mount->dirs_count++ ];
+            strcpy( sys->temp, assetsys_internal_get_string( sys, mount->mounted_as ) );
+            strcat( sys->temp, "/" );
+            strcat( sys->temp, filename );
+            sys->temp[ strlen( sys->temp )  - 1 ] = '\0';
+            as_dir->collated_index = assetsys_internal_register_collated( sys, sys->temp, 0 );
+        }
+    }
+
+    for( int i = 0; i < count; ++i )
+    {
+        if( !mz_zip_reader_is_file_a_directory( &mount->zip, (mz_uint) i ) )
+        {
+            if( mount->files_count >= mount->files_capacity )
+            {
+                mount->files_capacity *= 2;
+                struct assetsys_internal_file_t* new_files = (struct assetsys_internal_file_t*) ASSETSYS_MALLOC(
+                            sys->memctx, sizeof( *(mount->files) ) * mount->files_capacity );
+                memcpy( new_files, mount->files, sizeof( *(mount->files) ) * mount->files_count );
+                ASSETSYS_FREE( sys->memctx, mount->files );
+                mount->files = new_files;
+            }
+
+            mz_zip_archive_file_stat stat;
+            mz_bool result = mz_zip_reader_file_stat( &mount->zip, (mz_uint) i, &stat);
+            if( !result )
+            {
+                mz_zip_reader_end( &mount->zip );
+                ASSETSYS_FREE( sys->memctx, mount->dirs );
+                ASSETSYS_FREE( sys->memctx, mount->files );
+                return ASSETSYS_ERROR_FAILED_TO_READ_ZIP;
+            }
+
+            struct assetsys_internal_file_t* file = &mount->files[ mount->files_count++ ];
+            strcpy( sys->temp, assetsys_internal_get_string( sys, mount->mounted_as ) );
+            strcat( sys->temp, "/" );
+            strcat( sys->temp, stat.m_filename );
+            file->collated_index = assetsys_internal_register_collated( sys, sys->temp, 1 );
+            file->size = (int) stat.m_uncomp_size;
+            file->zip_index = i;
+
+            char* dir_path = assetsys_internal_dirname( sys->temp );
+            ASSETSYS_U64 handle = strpool_inject( &sys->strpool, dir_path, (int) strlen( dir_path ) - 1 );
+            int found = 0;
+            for( int j = 0; j < mount->dirs_count; ++j )
+            {
+                if( handle == sys->collated[ mount->dirs[ j ].collated_index ].path )
+                    found = 1;
+            }
+            if( !found )
+            {
+                struct assetsys_internal_folder_t* as_dir = &mount->dirs[ mount->dirs_count++ ];
+                as_dir->collated_index = assetsys_internal_register_collated( sys,
+                                                                              assetsys_internal_get_string( sys, handle ), 0 );
+            }
+        }
+    }
+
 
     assetsys_internal_collate_directories( sys, mount );
 
