@@ -3,7 +3,7 @@
           Licensing information can be found at the end of the file.
 ------------------------------------------------------------------------------
 
-hashtable.h - v1.1 - Cache efficient hash table implementation for C/C++.
+hashtable.h - v1.1ry - Cache efficient hash table implementation for C/C++.
 
 Do this:
     #define HASHTABLE_IMPLEMENTATION
@@ -22,7 +22,7 @@ typedef struct hashtable_t hashtable_t;
 void hashtable_init( hashtable_t* table, int item_size, int initial_capacity, void* memctx );
 void hashtable_term( hashtable_t* table );
 
-void hashtable_insert( hashtable_t* table, HASHTABLE_U64 key, void const* item );
+void* hashtable_insert( hashtable_t* table, HASHTABLE_U64 key, void const* item );
 void hashtable_remove( hashtable_t* table, HASHTABLE_U64 key );
 void hashtable_clear( hashtable_t* table );
 
@@ -532,7 +532,7 @@ static void hashtable_internal_expand_items( hashtable_t* table )
     }
 
 
-void hashtable_insert( hashtable_t* table, HASHTABLE_U64 key, void const* item )
+void* hashtable_insert( hashtable_t* table, HASHTABLE_U64 key, void const* item )
     {
     HASHTABLE_ASSERT( hashtable_internal_find_slot( table, key ) < 0 );
 
@@ -575,14 +575,14 @@ void hashtable_insert( hashtable_t* table, HASHTABLE_U64 key, void const* item )
     table->items_key[ table->count ] = key;
     table->items_slot[ table->count ] = slot;
     ++table->count;
+    return dest_item;
     } 
 
 
 void hashtable_remove( hashtable_t* table, HASHTABLE_U64 key )
     {
     int const slot = hashtable_internal_find_slot( table, key );
-    HASHTABLE_ASSERT( slot >= 0 );
-
+    if (slot < 0) return;
     int const slot_mask = table->slot_capacity - 1;
     HASHTABLE_U32 const hash = table->slots[ slot ].key_hash;
     int const base_slot = (int)( hash & (HASHTABLE_U32) slot_mask );
@@ -674,6 +674,8 @@ contributors:
     Randy Gaul (hashtable_clear, hashtable_swap )
 
 revision history:
+    1.1ry   hashtable_remove ignores bogous hashes  
+            hastable_insert returns added item pointer
     1.1     added hashtable_clear, hashtable_swap
     1.0     first released version  
 
