@@ -34,6 +34,11 @@ HASHTABLE_U64 const* hashtable_keys( hashtable_t const* table );
 
 void hashtable_swap( hashtable_t* table, int index_a, int index_b );
 
+#define hashtable_foreach(T, varname, table) \
+    for (int __i__ = 0, __l__ = hashtable_count(table), __e__ = 1; __e__; --__e__) \
+        for (T *varname = (T*)hashtable_items(table); __i__ < __l__; ++varname, ++__i__)
+
+/* TODO: hashtable_foreach_safe */
 
 #endif /* hashtable_h */
 
@@ -258,6 +263,20 @@ hashtable_find
 
 Returns a pointer to the item associated with the specified key, or NULL it the key was not found. The lookup is 
 designed for efficiency, and for minimizing cache missed.
+
+
+hashtable_foreach
+--------------
+
+    hashtable_foreach( item_type_t, item_var_name, hashtable_t *table )
+        {
+        if (item_var_name->key == 1)
+            {
+            break;
+            }
+        }
+
+For loop macro to iterate each item of the table in a convenient manner.
 
 
 hashtable_count
@@ -676,6 +695,7 @@ contributors:
 revision history:
     1.1ry   hashtable_remove ignores bogous hashes  
             hastable_insert returns added item pointer
+            added hashtable_foreach macro
     1.1     added hashtable_clear, hashtable_swap
     1.0     first released version  
 
